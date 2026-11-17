@@ -1,0 +1,472 @@
+// =============================================================
+//  Anonymous Campus Feedback System  (C++ console application)
+//  Thapar Institute of Engineering and Technology
+//  Team: Gautam Singh, Kavya Mehta, Ananya Singla
+//
+//  Compile:  g++ -std=c++11 -o feedback_system feedback_system.cpp
+//  Run:      ./feedback_system        (Windows: feedback_system.exe)
+//
+//  Admin password (demo): admin123
+//  Data file: feedback.txt (created next to the program)
+// =============================================================
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
+#include <map>
+#include <set>
+#include <algorithm>
+#include <iomanip>
+#include <cctype>
+#include <limits>
+
+using namespace std;
+
+// ---------------- Common module: constants & helpers ----------------
+const string DATA_FILE      = "feedback.txt";
+const string ADMIN_PASSWORD = "admin123";
+
+const vector<string> CATEGORIES = {"Hostel", "Canteen", "Academics",
+                                   "Infrastructure", "Faculty", "Other"};
+const vector<string> STATUSES   = {"Pending", "In Progress", "Resolved"};
+
+void printLine(char c = '-', int n = 60) { cout << string(n, c) << "\n"; }
+
+void printHeader(const string& title) {
+    cout << "\n";
+    printLine('=');
+    cout << "  " << title << "\n";
+    printLine('=');
+}
+
+string trim(const string& s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == string::npos) return "";
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
+}
+
+string toLower(string s) {
+    for (char& c : s) c = (char)tolower((unsigned char)c);
+    return s;
+}
+
+// Reads a whole line; returns trimmed text.
+string readLine(const string& prompt) {
+    cout << prompt;
+    string s;
+    if (!getline(cin, s)) { cin.clear(); return ""; }
+    return trim(s);
+}
+
+// Reads an integer in [lo, hi]; on invalid input shows an error and repeats.
+int readInt(const string& prompt, int lo, int hi) {
+    while (true) {
+        string s = readLine(prompt);
+        stringstream ss(s);
+        int v; char extra;
+        if (ss >> v && !(ss >> extra) && v >= lo && v <= hi) return v;
+        cout << "  [!] Invalid choice. Enter a number from " << lo << " to " << hi << ".\n";
+    }
+}
+
+void pauseScreen() {
+    cout << "\nPress Enter to continue...";
+    string s; getline(cin, s);
+}
+
+// ---------------- Feedback: one anonymous record ----------------
+// Note: there is deliberately NO field for name, roll number, email or phone.
+class Feedback {
+private:
+    int    id;
+    string category;
+    string message;
+    int    rating;   // 1..5, or 0 if not rated
+    string status;   // Pending / In Progress / Resolved
+
+public:
+    Feedback() : id(0), rating(0), status("Pending") {}
+    Feedback(int id, const string& cat, const string& msg, int rating,
+             const string& status = "Pending")
+        : id(id), category(cat), message(msg), rating(rating), status(status) {}
+
+    int    getId()       const { return id; }
+    string getCategory() const { return category; }
+    string getMessage()  const { return message; }
+    int    getRating()   const { return rating; }
+    string getStatus()   const { return status; }
+    void   setStatus(const string& s) { status = s; }
+
+    void display() const {
+        cout << "  ID       : " << id << "\n"
+             << "  Category : " << category << "\n"
+             << "  Message  : " << message << "\n"
+             << "  Rating   : ";
+        if (rating == 0) cout << "Not rated";
+        else cout << string(rating, '*') << string(5 - rating, '.') << " (" << rating << "/5)";
+        cout << "\n  Status   : " << status << "\n";
+    }
+
+    void displayRow() const {
+        string msg = message.size() > 32 ? message.substr(0, 29) + "..." : message;
+        cout << left << setw(6)  << id
+                     << setw(16) << category
+                     << setw(34) << msg
+                     << setw(4)  << (rating ? to_string(rating) : string("-"))
+                     << status << "\n";
+    }
+
+    // File format: id|category|rating|status|message
+    string serialize() const {
+        string safe = message;
+        replace(safe.begin(), safe.end(), '|', '/');
+        replace(safe.begin(), safe.end(), '\n', ' ');
+        return to_string(id) + "|" + category + "|" + to_string(rating) + "|" +
+               status + "|" + safe;
+    }
+
+    static bool deserialize(const string& line, Feedback& out) {
+        vector<string> parts;
+        string cur;
+        int pipes = 0;
+        for (char c : line) {
+            if (c == '|' && pipes < 4) { parts.push_back(cur); cur.clear(); ++pipes; }
+            else cur += c;
+        }
+        parts.push_back(cur);
+        if (parts.size() != 5) return false;
+        try {
+            out = Feedback(stoi(parts[0]), parts[1], parts[4], stoi(parts[2]), parts[3]);
+        } catch (...) { return false; }
+        return true;
+    }
+};
+
+// ---------------- FeedbackManager: holds and manages all records ----------------
+class FeedbackManager {
+private:
+    vector<Feedback> records;
+    int nextId;
+
+public:
+    FeedbackManager() : nextId(1001) {}
+
+    // Feedback module — O(1) average (push_back)
+    int addFeedback(const string& cat, const string& msg, int rating) {
+        int id = nextId++;
+        records.push_back(Feedback(id, cat, msg, rating, "Pending"));
+        return id;
+    }
+
+    // O(n) linear search
+    Feedback* findById(int id) {
+        for (auto& f : records) if (f.getId() == id) return &f;
+        return nullptr;
+    }
+
+    // Admin module — O(n)
+    bool updateStatus(int id, const string& newStatus) {
+        Feedback* f = findById(id);
+        if (!f) return false;
+        f->setStatus(newStatus);
+        return true;
+    }
+
+    void displayAll() const {
+        if (records.empty()) { cout << "  No feedback has been submitted yet.\n"; return; }
+        printTableHeader();
+        for (const auto& f : records) f.displayRow();
+        cout << "\n  Total: " << records.size() << " record(s)\n";
+    }
+
+    void filterByCategory(const string& cat) const {
+        int n = 0;
+        printTableHeader();
+        for (const auto& f : records)
+            if (f.getCategory() == cat) { f.displayRow(); ++n; }
+        if (n == 0) cout << "  No feedback in category \"" << cat << "\".\n";
+        else cout << "\n  " << n << " record(s) in " << cat << "\n";
+    }
+
+    void filterByStatus(const string& st) const {
+        int n = 0;
+        printTableHeader();
+        for (const auto& f : records)
+            if (f.getStatus() == st) { f.displayRow(); ++n; }
+        if (n == 0) cout << "  No feedback with status \"" << st << "\".\n";
+        else cout << "\n  " << n << " record(s) with status " << st << "\n";
+    }
+
+    const vector<Feedback>& getRecords() const { return records; }
+    size_t count() const { return records.size(); }
+
+    // Storage module
+    bool saveToFile(const string& file) const {
+        ofstream out(file.c_str());
+        if (!out) return false;
+        out << "NEXTID " << nextId << "\n";
+        for (const auto& f : records) out << f.serialize() << "\n";
+        return true;
+    }
+
+    int loadFromFile(const string& file) {
+        ifstream in(file.c_str());
+        if (!in) return -1;           // no file yet: first run
+        records.clear();
+        string line;
+        while (getline(in, line)) {
+            line = trim(line);
+            if (line.empty()) continue;
+            if (line.compare(0, 7, "NEXTID ") == 0) {
+                try { nextId = stoi(line.substr(7)); } catch (...) {}
+                continue;
+            }
+            Feedback f;
+            if (Feedback::deserialize(line, f)) {
+                records.push_back(f);
+                if (f.getId() >= nextId) nextId = f.getId() + 1;
+            }
+        }
+        return (int)records.size();
+    }
+
+    void loadSampleData() {
+        addFeedback("Hostel", "Water cooler on 2nd floor of Hostel J not working for a week.", 2);
+        addFeedback("Canteen", "Food quality has dropped, rice often undercooked.", 2);
+        addFeedback("Academics", "Lab sessions clash with lecture timings on Wednesday.", 3);
+        addFeedback("Infrastructure", "Wifi keeps disconnecting in the library reading hall.", 1);
+        addFeedback("Hostel", "Hostel wifi is very slow after 10 pm.", 2);
+        addFeedback("Canteen", "Please add more vegetarian options.", 4);
+        addFeedback("Faculty", "Please share lecture slides before class.", 0);
+        addFeedback("Hostel", "Water leakage in the bathroom near room 214.", 1);
+        updateStatus(1001, "In Progress");
+        updateStatus(1003, "Resolved");
+        updateStatus(1006, "Resolved");
+        updateStatus(1008, "In Progress");
+    }
+
+private:
+    static void printTableHeader() {
+        cout << left << setw(6) << "ID" << setw(16) << "Category" << setw(34) << "Message"
+             << setw(4) << "R" << "Status\n";
+        printLine();
+    }
+};
+
+// ---------------- ReportGenerator: statistics ----------------
+class ReportGenerator {
+public:
+    // Report module — O(n)
+    static void generate(const FeedbackManager& mgr) {
+        const vector<Feedback>& recs = mgr.getRecords();
+        printHeader("FEEDBACK REPORT");
+        if (recs.empty()) { cout << "  No data to report.\n"; return; }
+
+        // 1. complaints per category
+        map<string, int> catCount;
+        for (const auto& c : CATEGORIES) catCount[c] = 0;
+        map<string, int> statCount;
+        int ratingSum = 0, rated = 0;
+        for (const auto& f : recs) {
+            catCount[f.getCategory()]++;
+            statCount[f.getStatus()]++;
+            if (f.getRating() > 0) { ratingSum += f.getRating(); ++rated; }
+        }
+
+        int maxCount = 0; string busiest;
+        for (const auto& p : catCount)
+            if (p.second > maxCount) { maxCount = p.second; busiest = p.first; }
+
+        cout << "\n  Complaints per category:\n";
+        for (const auto& c : CATEGORIES) {
+            int v = catCount[c];
+            cout << "    " << left << setw(16) << c << setw(4) << v
+                 << string(v * 3, '#') << (c == busiest ? "  <-- most complaints" : "") << "\n";
+        }
+
+        // 2. status totals
+        cout << "\n  Status totals:\n";
+        for (const auto& s : STATUSES)
+            cout << "    " << left << setw(16) << s << statCount[s] << "\n";
+
+        // 3. average rating
+        cout << "\n  Average rating   : ";
+        if (rated) cout << fixed << setprecision(2) << (double)ratingSum / rated
+                        << " / 5  (from " << rated << " rated feedback)\n";
+        else cout << "No ratings yet\n";
+        cout << "  Total feedback   : " << recs.size() << "\n";
+
+        // 4. repeated complaints (FR9): keywords found in 2+ records
+        repeatedComplaints(recs);
+    }
+
+private:
+    static void repeatedComplaints(const vector<Feedback>& recs) {
+        static const set<string> stop = {
+            "the","a","an","is","are","was","were","in","on","of","for","to","and","or",
+            "not","has","have","had","be","been","it","its","this","that","with","very",
+            "after","before","near","more","should","please","often","keeps","from","at",
+            "by","as","our","we","my","week","floor","add"};
+        map<string, vector<int>> kw;
+        for (const auto& f : recs) {
+            string m = toLower(f.getMessage());
+            for (char& c : m) if (!isalpha((unsigned char)c)) c = ' ';
+            stringstream ss(m);
+            string w; set<string> seen;
+            while (ss >> w)
+                if (w.size() > 2 && !stop.count(w) && seen.insert(w).second)
+                    kw[w].push_back(f.getId());
+        }
+        vector<pair<string, vector<int>>> reps;
+        for (const auto& p : kw) if (p.second.size() >= 2) reps.push_back(p);
+        sort(reps.begin(), reps.end(), [](const pair<string, vector<int>>& a,
+                                          const pair<string, vector<int>>& b) {
+            return a.second.size() > b.second.size();
+        });
+
+        cout << "\n  Repeated complaints (keyword in 2+ records):\n";
+        if (reps.empty()) { cout << "    None found.\n"; return; }
+        for (size_t i = 0; i < reps.size() && i < 6; ++i) {
+            cout << "    \"" << reps[i].first << "\"  x" << reps[i].second.size() << "  -> IDs:";
+            for (int id : reps[i].second) cout << " " << id;
+            cout << "\n";
+        }
+    }
+};
+
+// ---------------- Menus (user interface) ----------------
+string chooseFrom(const vector<string>& options, const string& title) {
+    cout << "\n  " << title << "\n";
+    for (size_t i = 0; i < options.size(); ++i)
+        cout << "    " << i + 1 << ". " << options[i] << "\n";
+    int c = readInt("  Enter choice: ", 1, (int)options.size());
+    return options[c - 1];
+}
+
+void submitFeedback(FeedbackManager& mgr) {
+    printHeader("SUBMIT ANONYMOUS FEEDBACK");
+    cout << "  Your name, roll number or contact details are NOT asked or stored.\n";
+
+    // Step 1: category (invalid choice -> error, repeat)
+    string cat = chooseFrom(CATEGORIES, "Step 1 - Choose a category:");
+
+    // Step 2: message (empty text is rejected)
+    string msg;
+    while (true) {
+        msg = readLine("\n  Step 2 - Write your feedback:\n  > ");
+        if (!msg.empty()) break;
+        cout << "  [!] Feedback message cannot be empty. Please try again.\n";
+    }
+
+    // Step 3: rating 0-5 (0 = skip)
+    int rating = readInt("\n  Step 3 - Rate your experience 1-5 (0 to skip): ", 0, 5);
+
+    // Step 4 & 5: assign ID, save, confirm
+    int id = mgr.addFeedback(cat, msg, rating);
+    mgr.saveToFile(DATA_FILE);
+
+    cout << "\n";
+    printLine('*');
+    cout << "  Feedback submitted anonymously!\n"
+         << "  Your Feedback ID: " << id << "   (Status: Pending)\n"
+         << "  Save this ID to track your feedback later.\n";
+    printLine('*');
+    pauseScreen();
+}
+
+void trackFeedback(FeedbackManager& mgr) {
+    printHeader("TRACK FEEDBACK BY ID");
+    int id = readInt("  Enter your Feedback ID: ", 1, 1000000000);
+    Feedback* f = mgr.findById(id);
+    if (!f) cout << "  [!] No feedback found with ID " << id << ".\n";
+    else { cout << "\n"; f->display(); }
+    pauseScreen();
+}
+
+void adminMenu(FeedbackManager& mgr) {
+    printHeader("ADMIN LOGIN");
+    int attempts = 3;
+    while (attempts > 0) {
+        string pw = readLine("  Enter admin password: ");
+        if (pw == ADMIN_PASSWORD) break;
+        --attempts;
+        cout << "  [!] Incorrect password. " << attempts << " attempt(s) left.\n";
+    }
+    if (attempts == 0) { cout << "  Access denied.\n"; pauseScreen(); return; }
+    cout << "  Access granted. Welcome, Administrator.\n";
+
+    while (true) {
+        printHeader("ADMIN MENU");
+        cout << "  1. View all feedback\n"
+             << "  2. Filter by category\n"
+             << "  3. Filter by status\n"
+             << "  4. View one feedback in detail\n"
+             << "  5. Update feedback status\n"
+             << "  6. Generate report\n"
+             << "  7. Logout\n";
+        int c = readInt("  Enter choice: ", 1, 7);
+        cout << "\n";
+        switch (c) {
+            case 1: mgr.displayAll(); break;
+            case 2: mgr.filterByCategory(chooseFrom(CATEGORIES, "Choose category:")); break;
+            case 3: mgr.filterByStatus(chooseFrom(STATUSES, "Choose status:")); break;
+            case 4: {
+                int id = readInt("  Enter Feedback ID: ", 1, 1000000000);
+                Feedback* f = mgr.findById(id);
+                if (f) { cout << "\n"; f->display(); }
+                else cout << "  [!] Feedback ID not found.\n";
+                break;
+            }
+            case 5: {
+                int id = readInt("  Enter Feedback ID to update: ", 1, 1000000000);
+                Feedback* f = mgr.findById(id);
+                if (!f) { cout << "  [!] Feedback ID not found.\n"; break; }
+                cout << "  Current status: " << f->getStatus() << "\n";
+                string st = chooseFrom(STATUSES, "New status:");
+                mgr.updateStatus(id, st);
+                mgr.saveToFile(DATA_FILE);
+                cout << "  Status of feedback " << id << " updated to \"" << st << "\".\n";
+                break;
+            }
+            case 6: ReportGenerator::generate(mgr); break;
+            case 7: cout << "  Logged out.\n"; return;
+        }
+        pauseScreen();
+    }
+}
+
+int main() {
+    FeedbackManager mgr;
+    int loaded = mgr.loadFromFile(DATA_FILE);
+    if (loaded < 0) {
+        mgr.loadSampleData();          // first run: demo records
+        mgr.saveToFile(DATA_FILE);
+        loaded = (int)mgr.count();
+    }
+
+    printHeader("ANONYMOUS CAMPUS FEEDBACK SYSTEM");
+    cout << "  Thapar Institute of Engineering and Technology\n"
+         << "  Loaded " << loaded << " feedback record(s) from " << DATA_FILE << "\n";
+
+    while (true) {
+        printHeader("MAIN MENU");
+        cout << "  1. Submit feedback (Student)\n"
+             << "  2. Track my feedback by ID\n"
+             << "  3. Admin login\n"
+             << "  4. Exit\n";
+        int c = readInt("  Enter choice: ", 1, 4);
+        if (c == 1) submitFeedback(mgr);
+        else if (c == 2) trackFeedback(mgr);
+        else if (c == 3) adminMenu(mgr);
+        else {
+            if (mgr.saveToFile(DATA_FILE))
+                cout << "\n  Data saved to " << DATA_FILE << ". Goodbye!\n";
+            else
+                cout << "\n  [!] Could not save data. Goodbye!\n";
+            break;
+        }
+    }
+    return 0;
+}
